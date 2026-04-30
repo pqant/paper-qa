@@ -153,6 +153,9 @@ class PaperBridgeQdrantStore(VectorStore):
         Returns:
             Tuple of (list of Text objects, list of similarity scores).
         """
+        if k <= 0:
+            return [], []
+
         # Embed the query — respect embedding modes (QUERY vs DOCUMENT)
         try:
             embedding_model.set_mode(EmbeddingModes.QUERY)
@@ -264,6 +267,9 @@ class PaperBridgeQdrantStore(VectorStore):
             embedding_model: Embedding model.
             pdf_hashes: Optional set of PDF hashes to filter results to.
         """
+        if k <= 0:
+            return [], []
+
         try:
             embedding_model.set_mode(EmbeddingModes.QUERY)
         except (AttributeError, TypeError):
@@ -421,6 +427,9 @@ class PaperBridgeDocs(Docs):
         Returns:
             List of Text objects with doc references.
         """
+        if k <= 0:
+            return []
+
         from paperqa.settings import get_settings
 
         resolved_settings = get_settings(settings)

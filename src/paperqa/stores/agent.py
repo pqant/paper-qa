@@ -80,6 +80,7 @@ def _build_settings(
     settings.answer.evidence_skip_summary = evidence_skip_summary
     settings.answer.evidence_retrieval = True
     settings.answer.answer_max_sources = 5
+    settings.answer.max_concurrent_requests = 1  # LLM parallel=1
     return settings
 
 
