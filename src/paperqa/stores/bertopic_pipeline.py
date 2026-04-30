@@ -171,8 +171,14 @@ def fit_bertopic(
         tid = int(row[1]["Topic"])
         words = topic_model.get_topic(tid)
         if words:
-            # get_topic() returns list of strings in BERTopic 0.17+
-            topic_dict[tid] = [str(w) for w in words]
+            # Handle both list[str] and list[tuple[str, float]] formats
+            word_list = []
+            for w in words:
+                if isinstance(w, (tuple, list)):
+                    word_list.append(str(w[0]))
+                else:
+                    word_list.append(str(w))
+            topic_dict[tid] = word_list
         else:
             topic_dict[tid] = []
 
