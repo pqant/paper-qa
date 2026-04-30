@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 def _build_llm_config(
-    llm: str = "openai/Qwen3.6-27B",
-    api_base: str = "http://192.168.0.64:8080/v1",
+    llm: str = "openai/qwen3.6-35b-a3b",
+    api_base: str = "http://192.168.0.28:8005/v1",
     temperature: float = 0.0,
     timeout: int = 1800,
 ) -> dict:
@@ -61,8 +61,8 @@ def _build_embedding_config(
 
 
 def _build_settings(
-    llm: str = "openai/Qwen3.6-27B",
-    llm_api_base: str = "http://192.168.0.64:8080/v1",
+    llm: str = "openai/qwen3.6-35b-a3b",
+    llm_api_base: str = "http://192.168.0.28:8005/v1",
     temperature: float = 0.0,
     evidence_k: int = 5,
     evidence_skip_summary: bool = False,
@@ -177,7 +177,7 @@ async def paperbridge_agent_query(
     embedding_model: EmbeddingModel | None = None,
     search_index: SearchIndex | None = None,
     qdrant_collection: str = "paperbridge_glm_v2",
-    llm_api_base: str = "http://192.168.0.64:8080/v1",
+    llm_api_base: str = "http://192.168.0.28:8005/v1",
     evidence_skip_summary: bool = False,
 ) -> AnswerResponse:
     """Run the full agent pipeline: search → evidence → answer → complete.
@@ -233,9 +233,9 @@ async def paperbridge_agent_query(
     )
     logger.info("Gathered %d evidence contexts", len(session.contexts))
 
-    # Generate answer
+    # Generate answer using the session with gathered evidence
     session = await docs.aquery(
-        query=query,
+        query=session,
         settings=settings,
         embedding_model=embedding_model,
     )
@@ -250,7 +250,7 @@ async def paperbridge_contracrow(
     settings: Settings | None = None,
     embedding_model: EmbeddingModel | None = None,
     search_index: SearchIndex | None = None,
-    llm_api_base: str = "http://192.168.0.64:8080/v1",
+    llm_api_base: str = "http://192.168.0.28:8005/v1",
 ) -> AnswerResponse:
     """Check if a claim is supported, contradicted, or has insufficient evidence.
 
