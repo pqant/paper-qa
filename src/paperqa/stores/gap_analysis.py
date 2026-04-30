@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TopicResult:
     """Output from BERTopic topic clustering."""
-    topics: dict[int, list[str]]  # topic_id → [top_words]
+    topics: dict[int, list[str]]  # topic_id → [top_words] (BERTopic get_topic() output)
     topic_info: dict[str, Any]  # pandas DataFrame to dict: columns topic_id, count, name, avg_year
     chunk_to_topic: list[int]  # each chunk → topic_id
     sparse_topics: list[dict]  # topics with <50 docs
