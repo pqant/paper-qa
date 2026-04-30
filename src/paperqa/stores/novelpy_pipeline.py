@@ -1,0 +1,144 @@
+"""Novelpy pipeline — discover novel concept combinations.
+
+Extracts concepts from BERTopic topics, builds co-occurrence matrix,
+calculates atypicality scores to find unexplored combinations.
+
+Note: Uses custom co-occurrence proxy instead of novelpy library
+(novelpy's spacy dependency does not build on Python 3.14).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections import defaultdict
+from pathlib import Path
+
+from paperqa.stores.gap_analysis import NovelpyResult, TopicResult
+
+logger = logging.getLogger(__name__)
+
+
+def extract_concepts_from_topics(topic_result: TopicResult) -> list[str]:
+    """Extract unique concepts from BERTopic topic labels.
+
+    Uses top words from each topic as concepts.
+    """
+    concepts: set[str] = set()
+    for topic_id, words in topic_result.topics.items():
+        for word in words:
+            word_lower = word.lower().strip()
+            if word_lower and len(word_lower) > 2:
+                concepts.add(word_lower)
+    return sorted(concepts)
+
+
+def build_cooccurrence_from_chunks(
+    topic_result: TopicResult,
+) -> list[tuple[str, str, int]]:
+    """Build concept co-occurrence from chunk-to-topic assignments.
+
+    Concepts that appear in the same topic co-occur.
+    Returns list of (concept_a, concept_b, count).
+    """
+    # Map concept → set of topic_ids
+    concept_to_topics: dict[str, set[int]] = defaultdict(set)
+    for topic_id, words in topic_result.topics.items():
+        for word in words:
+            concept_to_topics[word.lower()].add(topic_id)
+
+    # Build topic→chunk count map
+    topic_counts: dict[int, int] = {}
+    for t in topic_result.chunk_to_topic:
+        if t != -1:
+            topic_counts[t] = topic_counts.get(t, 0) + 1
+
+    # Count co-occurrences
+    cooccurrence: dict[tuple[str, str], int] = defaultdict(int)
+    concept_list = sorted(concept_to_topics.keys())
+
+    for i, c_a in enumerate(concept_list):
+        for c_b in concept_list[i + 1:]:
+            shared = concept_to_topics[c_a] & concept_to_topics[c_b]
+            if shared:
+                # Count chunks in shared topics
+                count = sum(topic_counts.get(tid, 0) for tid in shared)
+                cooccurrence[(c_a, c_b)] = count
+
+    result = [(a, b, count) for (a, b), count in cooccurrence.items()]
+    result.sort(key=lambda x: -x[2])
+
+    logger.info("Built co-occurrence: %d pairs from %d concepts",
+                len(result), len(concept_list))
+    return result
+
+
+def calculate_novelty(
+    concepts: list[str],
+    cooccurrence: list[tuple[str, str, int]],
+    top_k: int = 50,
+) -> list[tuple[str, str, float]]:
+    """Calculate atypicality scores for concept pairs.
+
+    Uses normalized co-occurrence frequency as novelty proxy.
+    Low co-occurrence + semantic relatedness = high novelty.
+
+    Returns list of (concept_a, concept_b, score) sorted by score descending.
+    """
+    if not cooccurrence:
+        return []
+
+    max_count = max(c[2] for c in cooccurrence) if cooccurrence else 1
+
+    # Novelty = inverse frequency (rare pairs are more novel)
+    # But filter to pairs that DO co-occur (completely absent = not actionable)
+    novel_pairs = []
+    for c_a, c_b, count in cooccurrence:
+        if count > 0:
+            # Normalized score: lower frequency → higher novelty
+            score = 1.0 - (count / max_count)
+            # Only keep pairs with some co-occurrence but relatively rare
+            # Use absolute threshold: pairs sharing < 1000 chunks are candidates
+            if count >= 5 and score > 0.1:
+                novel_pairs.append((c_a, c_b, round(score, 4)))
+
+    novel_pairs.sort(key=lambda x: -x[2])
+    return novel_pairs[:top_k]
+
+
+async def run_novelpy(
+    topic_result: TopicResult,
+    output_dir: str = "./data/gap_analysis/novelpy",
+) -> NovelpyResult:
+    """Run Novelpy pipeline: extract concepts → co-occurrence → novelty → save."""
+    # Extract concepts
+    concepts = extract_concepts_from_topics(topic_result)
+    logger.info("Extracted %d concepts from BERTopic", len(concepts))
+
+    # Build co-occurrence
+    cooccurrence = build_cooccurrence_from_chunks(topic_result)
+
+    # Calculate novelty
+    novel_pairs = calculate_novelty(concepts, cooccurrence)
+
+    # Save artifacts
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    with open(output_path / "concepts.json", "w") as f:
+        json.dump(concepts, f, indent=2)
+
+    with open(output_path / "cooccurrence.json", "w") as f:
+        json.dump([{"a": a, "b": b, "count": c} for a, b, c in cooccurrence], f, indent=2)
+
+    with open(output_path / "novel_pairs.json", "w") as f:
+        json.dump([{"a": a, "b": b, "score": s} for a, b, s in novel_pairs], f, indent=2)
+
+    logger.info("Saved Novelpy artifacts: %d concepts, %d novel pairs",
+                len(concepts), len(novel_pairs))
+
+    return NovelpyResult(
+        concepts=concepts,
+        cooccurrence_counts=cooccurrence,
+        novel_pairs=novel_pairs,
+    )
