@@ -1,3 +1,7 @@
+from paperqa.stores.agent import (
+    paperbridge_agent_query,
+    paperbridge_contracrow,
+)
 from paperqa.stores.paperbridge_store import (
     PaperBridgeDocs,
     PaperBridgeQdrantStore,
@@ -7,5 +11,7 @@ from paperqa.stores.paperbridge_store import (
 __all__ = [
     "PaperBridgeDocs",
     "PaperBridgeQdrantStore",
+    "paperbridge_agent_query",
+    "paperbridge_contracrow",
     "parse_pdf_name",
 ]

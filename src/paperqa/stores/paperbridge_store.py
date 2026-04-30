@@ -9,7 +9,7 @@ from typing import Any, Callable, Sequence
 from lmi import Embeddable, EmbeddingModel, EmbeddingModes
 from pydantic import ConfigDict, Field
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.http.models import Record
+from qdrant_client.http.models import FieldCondition, Filter, MatchValue, Record
 
 from paperqa.docs import Docs
 from paperqa.llms import VectorStore
@@ -193,6 +193,128 @@ class PaperBridgeQdrantStore(VectorStore):
 
         return texts, scores
 
+    async def query_chunks_by_pdf_hashes(
+        self,
+        pdf_hashes: set[str],
+        batch_size: int = 500,
+    ) -> list[tuple[dict, list[float]]]:
+        """Retrieve all chunks for given PDF hashes from Qdrant.
+
+        Args:
+            pdf_hashes: Set of SHA-256 hashes to fetch chunks for.
+            batch_size: Scroll batch size.
+
+        Returns:
+            List of (payload, vector) tuples for matching chunks.
+        """
+        from qdrant_client.http.models import Filter, MatchAny
+
+        qdrant_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="pdf_hash",
+                    match=MatchAny(any=list(pdf_hashes)),
+                )
+            ]
+        )
+
+        all_chunks: list[tuple[dict, list[float]]] = []
+        offset = None
+        seen_offsets: set[str] = set()
+
+        while True:
+            points, next_offset = await self.client.scroll(
+                collection_name=self.collection_name,
+                limit=batch_size,
+                offset=offset,
+                scroll_filter=qdrant_filter,
+                with_payload=["pdf_name", "pdf_hash", "pdf_path", "text", "page_num"],
+                with_vectors=True,
+            )
+            if not points:
+                break
+
+            for point in points:
+                all_chunks.append((point.payload, point.vector))
+
+            if next_offset is None:
+                break
+
+            offset_str = str(next_offset)
+            if offset_str in seen_offsets:
+                break
+            seen_offsets.add(offset_str)
+            offset = next_offset
+
+        logger.info("Fetched %d chunks for %d PDF hashes", len(all_chunks), len(pdf_hashes))
+        return all_chunks
+
+    async def similarity_search_with_filter(
+        self,
+        query: str,
+        k: int,
+        embedding_model: EmbeddingModel,
+        pdf_hashes: set[str] | None = None,
+    ) -> tuple[Sequence[Embeddable], list[float]]:
+        """Like similarity_search but optionally filter to specific PDFs.
+
+        Args:
+            query: Search query string.
+            k: Number of results.
+            embedding_model: Embedding model.
+            pdf_hashes: Optional set of PDF hashes to filter results to.
+        """
+        try:
+            embedding_model.set_mode(EmbeddingModes.QUERY)
+        except (AttributeError, TypeError):
+            pass
+
+        query_embedding = (await embedding_model.embed_documents([query]))[0]
+
+        try:
+            embedding_model.set_mode(EmbeddingModes.DOCUMENT)
+        except (AttributeError, TypeError):
+            pass
+
+        qdrant_filter = None
+        if pdf_hashes:
+            from qdrant_client.http.models import Filter, MatchAny
+
+            qdrant_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="pdf_hash",
+                        match=MatchAny(any=list(pdf_hashes)),
+                    )
+                ]
+            )
+
+        results = await self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_embedding,
+            limit=k,
+            query_filter=qdrant_filter,
+            with_payload=True,
+            with_vectors=True,
+        )
+
+        doc_cache: dict[str, DocDetails] = {}
+        texts: list[Text] = []
+        scores: list[float] = []
+
+        for point in results.points:
+            payload = point.payload
+            pdf_hash = payload["pdf_hash"]
+
+            if pdf_hash not in doc_cache:
+                doc_cache[pdf_hash] = self._payload_to_doc(payload)
+
+            text = self._payload_to_text(payload, point.vector, doc_cache[pdf_hash])
+            texts.append(text)
+            scores.append(point.score)
+
+        return texts, scores
+
 
 class PaperBridgeDocs(Docs):
     """PaperQA2 Docs subclass that reads from PaperBridge Qdrant corpus.
@@ -203,17 +325,16 @@ class PaperBridgeDocs(Docs):
 
     async def load_docs_from_qdrant(
         self,
-        batch_size: int = 100,
-        max_concurrent_requests: int = 5,
+        batch_size: int = 1000,
     ) -> None:
-        """Populate self.docs and self.docnames by scrolling Qdrant.
+        """Populate self.docs and self.docnames by sequentially scrolling Qdrant.
 
         This is a one-time operation that extracts unique PDF metadata from our
-        Qdrant collection. Called before any queries.
+        Qdrant collection. Called before any queries. Uses sequential scrolling
+        to ensure all documents are loaded (parallel batch approach has race conditions).
 
         Args:
             batch_size: Number of points to scroll per batch.
-            max_concurrent_requests: Concurrency for scroll operations.
         """
         store = self.texts_index
         if not isinstance(store, PaperBridgeQdrantStore):
@@ -221,54 +342,62 @@ class PaperBridgeDocs(Docs):
 
         collection_info = await store.client.get_collection(store.collection_name)
         total_points = collection_info.points_count or 0
-
-        semaphore = asyncio.Semaphore(max_concurrent_requests)
-        all_points: list[list] = []
-
-        async def fetch_batch(offset):
-            async with semaphore:
-                points, next_offset = await store.client.scroll(
-                    collection_name=store.collection_name,
-                    limit=batch_size,
-                    offset=offset,
-                    with_payload=["pdf_name", "pdf_hash", "pdf_path"],
-                    with_vectors=False,
-                )
-                return points or []
-
-        tasks = [
-            fetch_batch(offset) for offset in range(0, total_points, batch_size)
-        ]
-        results = await asyncio.gather(*tasks)
-        for batch in results:
-            all_points.extend(batch)
-
-        logger.info(f"Scrolled {len(all_points)} points from Qdrant")
+        logger.info("Loading docs from Qdrant collection with %d points", total_points)
 
         seen_hashes: set[str] = set()
-        for point in all_points:
-            payload = point.payload
-            pdf_hash = payload.get("pdf_hash")
-            if not pdf_hash or pdf_hash in seen_hashes:
-                continue
-            seen_hashes.add(pdf_hash)
+        scrolled = 0
+        offset = None
+        seen_offsets: set[str] = set()
 
-            meta = parse_pdf_name(payload["pdf_name"])
-            doc = DocDetails(
-                docname=meta["docname"],
-                dockey=pdf_hash,
-                citation=meta["citation"],
-                content_hash=pdf_hash,
-                year=meta["year"],
-                doi=meta["doi"],
-                title=meta["title"],
-                file_location=payload.get("pdf_path"),
-                fields_to_overwrite_from_metadata=set(),
+        while True:
+            points, next_offset = await store.client.scroll(
+                collection_name=store.collection_name,
+                limit=batch_size,
+                offset=offset,
+                with_payload=["pdf_name", "pdf_hash", "pdf_path"],
+                with_vectors=False,
             )
-            self.docs[doc.dockey] = doc
-            self.docnames.add(doc.docname)
+            if not points:
+                break
 
-        logger.info(f"Loaded {len(self.docs)} unique docs from Qdrant")
+            for point in points:
+                payload = point.payload
+                pdf_hash = payload.get("pdf_hash")
+                if not pdf_hash or pdf_hash in seen_hashes:
+                    continue
+                seen_hashes.add(pdf_hash)
+
+                meta = parse_pdf_name(payload["pdf_name"])
+                doc = DocDetails(
+                    docname=meta["docname"],
+                    dockey=pdf_hash,
+                    citation=meta["citation"],
+                    content_hash=pdf_hash,
+                    year=meta["year"],
+                    doi=meta["doi"],
+                    title=meta["title"],
+                    file_location=payload.get("pdf_path"),
+                    fields_to_overwrite_from_metadata=set(),
+                )
+                self.docs[doc.dockey] = doc
+                self.docnames.add(doc.docname)
+
+            scrolled += len(points)
+            logger.info(
+                "Scrolled %d points, loaded %d unique docs", scrolled, len(self.docs)
+            )
+
+            if next_offset is None:
+                break
+
+            offset_str = str(next_offset)
+            if offset_str in seen_offsets:
+                logger.warning("Detected repeated offset %s, stopping", offset_str)
+                break
+            seen_offsets.add(offset_str)
+            offset = next_offset
+
+        logger.info("Loaded %d unique docs from Qdrant", len(self.docs))
 
     async def retrieve_texts(
         self,
