@@ -34,6 +34,9 @@ def _build_llm_config(
     timeout: int = 1800,
 ) -> dict:
     """Build LiteLLM model_list config for local LLM."""
+    import os
+
+    os.environ.setdefault("OPENAI_API_KEY", "sk-local-dummy")
     return {
         "name": llm,
         "model_list": [
@@ -41,6 +44,7 @@ def _build_llm_config(
                 "model_name": llm,
                 "litellm_params": {
                     "model": llm,
+                    "api_key": os.environ.get("OPENAI_API_KEY", "sk-local-dummy"),
                     "api_base": api_base,
                     "temperature": temperature,
                     "timeout": timeout,
