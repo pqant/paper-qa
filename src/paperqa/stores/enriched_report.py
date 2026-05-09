@@ -587,7 +587,29 @@ def _build_candidates(
 
     All domain_relevance_scores are embedding-based — no static fallbacks.
     """
-    from paperqa.stores.deterministic_gap_extraction import extract_core_terms
+    from paperqa.stores.deterministic_gap_extraction import (
+        STOP_WORDS as GAP_STOP_WORDS,
+        extract_core_terms,
+    )
+
+    def _filter_core_terms(terms: list[str], fallback_title: str = "") -> list[str]:
+        """Filter out stop words and noise from core terms.
+        If all terms are filtered, return first 3 words from fallback title."""
+        filtered = [
+            t for t in terms
+            if len(t) >= 3 and t not in GAP_STOP_WORDS and not t.isdigit()
+        ]
+        if filtered:
+            return filtered[:5]
+        # Fallback: use first 3 meaningful words from title
+        if fallback_title:
+            words = fallback_title.replace("_", " ").split()
+            return [
+                w.lower() for w in words
+                if len(w) >= 4 and w.lower() not in GAP_STOP_WORDS
+            ][:3]
+        return terms[:5]
+
     candidates: list[dict[str, Any]] = []
     seen_titles: set[str] = set()
     gap_idx = 0
@@ -730,7 +752,7 @@ def _build_candidates(
             ),
             "domain_category": domain_cat,
             "domain_relevance_score": score,
-            "core_terms": [concept_a, concept_b],
+            "core_terms": [c for c in (concept_a, concept_b) if c not in GAP_STOP_WORDS],
             "chunk_count": 0,
             "statistical_score": atypicality,
             "priority_score": _compute_priority(
@@ -774,7 +796,10 @@ def _build_candidates(
             "description": f"Authors mention this gap {count} times in corpus",
             "domain_category": domain_cat,
             "domain_relevance_score": score,
-            "core_terms": [w.lower() for w in label.replace("_", " ").split() if len(w) > 2],
+            "core_terms": _filter_core_terms(
+                [w.lower() for w in label.replace("_", " ").split()],
+                fallback_title=label,
+            ),
             "chunk_count": count,
             "statistical_score": min(1.0, count / 50),
             "priority_score": _compute_priority(

@@ -243,7 +243,7 @@ class EvidenceCollector:
             with_vectors=False,
         )
 
-        min_chars = int(os.getenv("EVIDENCE_MIN_CHUNK_CHARS", "40"))
+        min_chars = int(os.getenv("EVIDENCE_MIN_CHUNK_CHARS", "60"))
 
         # Convert to EvidenceChunk objects
         chunks = []

@@ -148,6 +148,32 @@ class GapCandidate:
         return 0.4 * stat_score + 0.3 * evidence_score + 0.3 * source_score
 
 
+# English stop words that add no semantic value to evidence search
+STOP_WORDS: frozenset = frozenset({
+    "the", "and", "for", "with", "of", "in", "on", "to", "a", "an",
+    "is", "it", "this", "that", "are", "was", "were", "be", "been",
+    "have", "has", "had", "from", "or", "but", "not", "no", "nor",
+    "do", "does", "did", "will", "would", "shall", "should", "may",
+    "might", "can", "could", "its", "they", "them", "their", "we",
+    "our", "you", "your", "he", "she", "his", "her", "who", "what",
+    "which", "where", "when", "how", "all", "each", "every", "both",
+    "few", "many", "much", "some", "such", "only", "own", "same",
+    "so", "than", "too", "very", "just", "also", "into", "over",
+    "after", "before", "between", "under", "about", "against",
+    "during", "among", "while", "being", "having", "doing",
+    # Generic academic terms that add no semantic value
+    "research", "study", "studies", "analysis", "analyses", "method",
+    "methods", "approach", "approaches", "model", "models", "system",
+    "systems", "technique", "techniques", "framework", "frameworks",
+    "algorithm", "algorithms", "application", "applications", "problem",
+    "problems", "issue", "issues", "data", "information", "process",
+    "processes", "methodology", "methodologies", "review", "reviews",
+    "survey", "surveys", "journal", "journals", "paper", "papers",
+    "based", "using", "towards", "toward", "via", "through",
+    "space", "spaces", "design", "designs", "performance",
+})
+
+
 def extract_core_terms(topic_name: str) -> list[str]:
     """
     Extract meaningful core terms from a BERTopic topic name.
@@ -156,23 +182,8 @@ def extract_core_terms(topic_name: str) -> list[str]:
     Output: ["boxes", "pallet", "superboxes", "trios"]
 
     Fully deterministic - no LLM. Filters out English stop words
-    that BERTopic sometimes includes in labels (e.g., "the_and").
+    and generic academic terms that add no semantic value.
     """
-    # English stop words that add no semantic value to evidence search
-    STOP_WORDS = frozenset({
-        "the", "and", "for", "with", "of", "in", "on", "to", "a", "an",
-        "is", "it", "this", "that", "are", "was", "were", "be", "been",
-        "have", "has", "had", "from", "or", "but", "not", "no", "nor",
-        "do", "does", "did", "will", "would", "shall", "should", "may",
-        "might", "can", "could", "its", "they", "them", "their", "we",
-        "our", "you", "your", "he", "she", "his", "her", "who", "what",
-        "which", "where", "when", "how", "all", "each", "every", "both",
-        "few", "many", "much", "some", "such", "only", "own", "same",
-        "so", "than", "too", "very", "just", "also", "into", "over",
-        "after", "before", "between", "under", "about", "against",
-        "during", "among", "while", "being", "having", "doing",
-    })
-
     # Remove numeric prefix
     parts = topic_name.split("_", 1)
     if len(parts) > 1 and parts[0].isdigit():
@@ -191,6 +202,12 @@ def extract_core_terms(topic_name: str) -> list[str]:
             not term_lower.startswith("0x") and
             not term_lower.startswith("00")):
             terms.append(term_lower)
+
+    # If everything was filtered, return raw terms (better than empty)
+    if not terms:
+        raw = [t.lower() for t in core.split("_") if len(t) >= 3][:4]
+        if raw:
+            return raw
 
     return terms
 

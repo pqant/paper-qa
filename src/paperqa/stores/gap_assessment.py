@@ -86,7 +86,7 @@ async def assess_gap_worthiness(
             llm_api_base=llm_api_base,
             llm_model=llm_model,
             temperature=0.1,  # Low temperature for consistency
-            max_tokens=3000,
+            max_tokens=2000,
         )
 
         # Parse response — LLM may wrap JSON in markdown fences or preamble
@@ -168,7 +168,7 @@ IMPORTANT RULES:
 - Cite specific evidence numbers in your reasoning
 - Be conservative - if unsure, recommend "insufficient_evidence"
 
-Return JSON in this exact format:
+Return ONLY a valid JSON object, no preamble, no explanation, no markdown:
 {{
     "paper_worthy": "worthy" or "not_worthy" or "insufficient_evidence",
     "confidence": 0.0-1.0,
@@ -261,7 +261,10 @@ async def _call_llm(
     msg = response["choices"][0]["message"]
     content = msg.get("content", "") or ""
     reasoning = msg.get("reasoning_content", "") or ""
-    return content if content.strip() else reasoning
+
+    # Combine both fields — reasoning models put JSON in reasoning_content
+    combined = f"{reasoning}\n\n{content}" if reasoning and content else (content or reasoning)
+    return combined
 
 
 def _extract_json(text: str) -> dict | None:
@@ -271,23 +274,76 @@ def _extract_json(text: str) -> dict | None:
     if not text or not text.strip():
         return None
 
+    # Strip markdown code fences
     cleaned = re.sub(r"```(?:json)?\s*", "", text)
     cleaned = cleaned.replace("```", "")
 
-    for anchor in ['"paper_worthy"', '"confidence"', "{"]:
-        start = cleaned.rfind(anchor)
-        if start == -1:
-            continue
-        brace = cleaned.rfind("{", 0, start + 1)
-        if brace == -1:
-            continue
-        for end in range(len(cleaned), brace, -1):
-            try:
-                obj = json.loads(cleaned[brace:end])
-                if isinstance(obj, dict) and "paper_worthy" in obj:
-                    return obj
-            except (json.JSONDecodeError, ValueError):
+    # Strategy 1: Find the last occurrence of "paper_worthy" and look for a
+    # JSON object that contains it. This handles models that output reasoning
+    # first, then JSON at the end.
+    last_pw = cleaned.rfind('"paper_worthy"')
+    if last_pw != -1:
+        # Find the opening brace before "paper_worthy"
+        brace_before = cleaned.rfind("{", 0, last_pw + 1)
+        if brace_before != -1:
+            # Find matching closing brace
+            depth = 0
+            in_string = False
+            escape_next = False
+            for i in range(brace_before, len(cleaned)):
+                ch = cleaned[i]
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == '\\' and in_string:
+                    escape_next = True
+                    continue
+                if ch == '"' and not escape_next:
+                    in_string = not in_string
+                if not in_string:
+                    if ch == '{' or ch == '[':
+                        depth += 1
+                    elif ch == '}' or ch == ']':
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                obj = json.loads(cleaned[brace_before:i + 1])
+                                if isinstance(obj, dict) and "paper_worthy" in obj:
+                                    return obj
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                            break
+
+    # Strategy 2: Try all opening braces as fallback
+    brace_start = cleaned.find('{')
+    while brace_start != -1:
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i in range(brace_start, len(cleaned)):
+            ch = cleaned[i]
+            if escape_next:
+                escape_next = False
                 continue
+            if ch == '\\' and in_string:
+                escape_next = True
+                continue
+            if ch == '"' and not escape_next:
+                in_string = not in_string
+            if not in_string:
+                if ch == '{' or ch == '[':
+                    depth += 1
+                elif ch == '}' or ch == ']':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            obj = json.loads(cleaned[brace_start:i + 1])
+                            if isinstance(obj, dict) and "paper_worthy" in obj:
+                                return obj
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                        break
+        brace_start = cleaned.find('{', brace_start + 1)
 
     return None
 
