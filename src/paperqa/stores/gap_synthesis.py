@@ -45,7 +45,7 @@ def collect_candidate_gaps(
             seen_titles.add(title)
             candidates.append({
                 "title": title,
-                "description": f"Topic '{sparse['name']}' has only {sparse['count']} documents in corpus of 175K chunks.",
+                "description": f"Topic '{sparse['name']}' has only {sparse['count']} documents in corpus.",
                 "evidence_sources": ["bertopic_sparse"],
             })
 
@@ -94,7 +94,8 @@ async def validate_candidate(
 
     Returns {title, description, evidence_sources, answer, is_confirmed, contexts}.
     """
-    query = f"What research exists on {candidate['title']} in 3D bin packing or container loading?"
+    from paperqa.stores.gap_assessment import get_domain_name
+    query = f"What research exists on {candidate['title']} in {get_domain_name()}?"
 
     result = await paperbridge_agent_query(
         query=query,
@@ -116,9 +117,10 @@ async def validate_candidate(
         "title": candidate["title"],
         "description": candidate["description"],
         "evidence_sources": candidate["evidence_sources"],
-        "answer": answer[:500],
+        "answer": answer,  # Full answer, not truncated
         "is_confirmed": is_confirmed,
         "contexts": len(result.session.contexts),
+        "query": query,  # Store the query for reference
     }
 
 
@@ -168,10 +170,11 @@ async def synthesize_gaps(
     confirmed_gaps.sort(key=lambda x: -x.confidence)
 
     # Generate executive summary
+    estimated_papers = max(1, len(topic_result.chunk_to_topic) // 17)
     summary = (
-        f"Analysis of 9,987 papers ({len(topic_result.chunk_to_topic):,} chunks) "
-        f"in 3D container loading / bin packing identified {len(confirmed_gaps)} "
-        f"actionable research gaps across {len(topic_result.topics)} discovered topics. "
+        f"Analysis of {estimated_papers:,} papers ({len(topic_result.chunk_to_topic):,} chunks) "
+        f"identified {len(confirmed_gaps)} actionable research gaps across "
+        f"{len(topic_result.topics)} discovered topics. "
         f"Gaps were validated using {len(candidates)} candidate queries against the corpus."
     )
 
@@ -186,7 +189,7 @@ async def synthesize_gaps(
         summary=summary,
         recommendations=recommendations,
         metadata={
-            "total_papers": 9987,
+            "total_papers": estimated_papers,
             "total_chunks": len(topic_result.chunk_to_topic),
             "total_topics": len(topic_result.topics),
             "analysis_date": str(date.today()),

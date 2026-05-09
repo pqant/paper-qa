@@ -33,9 +33,22 @@ def parse_pdf_name(pdf_name: str) -> dict[str, Any]:
     name = pdf_name.replace(".pdf", "")
     parts = name.split("__", 2)
     year = int(parts[0]) if parts[0].isdigit() else None
-    doi_raw = parts[1] if len(parts) > 1 else None
-    doi = doi_raw.replace("_", "/") if doi_raw else None
-    title = parts[2].strip() if len(parts) > 2 else name
+
+    # DOI only exists if we have exactly 3 parts (year__doi__title)
+    # If only 2 parts (year__title), there is no DOI
+    if len(parts) == 3:
+        doi_raw = parts[1]
+        doi = doi_raw.replace("_", "/") if doi_raw else None
+        title = parts[2].strip()
+    elif len(parts) == 2:
+        # No DOI in this filename
+        doi = None
+        title = parts[1].strip()
+    else:
+        # Only year or malformed
+        doi = None
+        title = name
+
     citation = f"{title}, {year}." if year else title
     return {
         "year": year,

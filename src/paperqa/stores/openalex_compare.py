@@ -15,8 +15,9 @@ from paperqa.stores.gap_analysis import OpenAlexResult, TopicResult
 
 logger = logging.getLogger(__name__)
 
-# Search terms for OpenAlex topic discovery
-DOMAIN_SEARCH_TERMS = [
+import os
+
+_DEFAULT_SEARCH_TERMS = [
     "bin packing",
     "container loading",
     "cutting stock",
@@ -32,6 +33,18 @@ DOMAIN_SEARCH_TERMS = [
 ]
 
 
+def get_domain_search_terms() -> list[str]:
+    """Return OpenAlex search terms from env or defaults.
+
+    Set OPENALEX_SEARCH_TERMS as pipe-separated to override:
+    OPENALEX_SEARCH_TERMS="deep learning|transformer|attention mechanism"
+    """
+    env = os.getenv("OPENALEX_SEARCH_TERMS")
+    if env:
+        return [t.strip() for t in env.split("|") if t.strip()]
+    return _DEFAULT_SEARCH_TERMS
+
+
 async def fetch_openalex_topics() -> list[dict]:
     """Query OpenAlex API for topics related to our domain.
 
@@ -44,7 +57,7 @@ async def fetch_openalex_topics() -> list[dict]:
     topic_info: dict[str, dict] = {}  # id → {display_name, ...}
 
     async with httpx.AsyncClient(timeout=60.0) as client:
-        for term in DOMAIN_SEARCH_TERMS:
+        for term in get_domain_search_terms():
             try:
                 url = "https://api.openalex.org/works"
                 params = {
@@ -109,22 +122,71 @@ async def fetch_openalex_topics() -> list[dict]:
     return topics_list
 
 
-def compute_coverage(
+async def compute_coverage_embedding(
     openalex_topics: list[dict],
     topic_result: TopicResult,
-    threshold: float = 0.01,
+    embedding_api_base: str | None = None,
+    embedding_model: str | None = None,
+    similarity_threshold: float = 0.65,
 ) -> tuple[list[dict], list[dict]]:
-    """Match BERTopic topics to OpenAlex topics and compute coverage.
+    """Match BERTopic topics to OpenAlex topics via embedding cosine similarity.
+
+    For each OpenAlex topic, find the best-matching BERTopic topic by
+    embedding similarity. If no BERTopic topic matches above the threshold,
+    the OpenAlex topic is considered "missing" from our corpus.
 
     Returns (our_coverage, missing_topics).
     """
-    # Build BERTopic keyword set
-    bertopic_keywords: set[str] = set()
-    for topic_id, words in topic_result.topics.items():
-        for word in words:
-            bertopic_keywords.add(word.lower())
+    import httpx
+    import numpy as np
 
-    # Build topic→chunk count map
+    api_base = embedding_api_base or os.getenv("EMBEDDING_API_BASE", "http://192.168.0.28:8082/v1")
+    model = embedding_model or os.getenv("EMBEDDING_MODEL", "hf.co/Qwen/Qwen3-Embedding-8B-GGUF:F16")
+
+    # Build BERTopic topic labels: "keyword1 keyword2 keyword3 ..."
+    bertopic_labels: list[str] = []
+    bertopic_ids: list[int] = []
+    for tid, words in topic_result.topics.items():
+        bertopic_labels.append(" ".join(words[:8]))
+        bertopic_ids.append(tid)
+
+    if not bertopic_labels or not openalex_topics:
+        logger.warning("Empty topics: BERTopic=%d, OpenAlex=%d", len(bertopic_labels), len(openalex_topics))
+        return [], []
+
+    openalex_names = [t["display_name"] for t in openalex_topics]
+
+    # Embed both sets
+    async def embed_batch(texts: list[str]) -> np.ndarray:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            all_vecs = []
+            batch_size = 64
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i : i + batch_size]
+                resp = await client.post(
+                    f"{api_base}/embeddings",
+                    json={"input": batch, "model": model},
+                )
+                resp.raise_for_status()
+                data = resp.json()["data"]
+                vecs = [item["embedding"] for item in sorted(data, key=lambda x: x["index"])]
+                all_vecs.extend(vecs)
+            return np.array(all_vecs, dtype=np.float32)
+
+    logger.info("Embedding %d BERTopic labels + %d OpenAlex topics for coverage...",
+                len(bertopic_labels), len(openalex_names))
+
+    bert_vecs = await embed_batch(bertopic_labels)
+    oa_vecs = await embed_batch(openalex_names)
+
+    # Normalize for cosine similarity
+    bert_norms = bert_vecs / (np.linalg.norm(bert_vecs, axis=1, keepdims=True) + 1e-10)
+    oa_norms = oa_vecs / (np.linalg.norm(oa_vecs, axis=1, keepdims=True) + 1e-10)
+
+    # similarity matrix: (num_openalex, num_bertopic)
+    sim_matrix = oa_norms @ bert_norms.T
+
+    # Build topic→chunk count
     topic_counts: dict[int, int] = {}
     for t in topic_result.chunk_to_topic:
         if t != -1:
@@ -133,59 +195,58 @@ def compute_coverage(
     our_coverage: list[dict] = []
     missing_topics: list[dict] = []
 
-    for topic in openalex_topics:
-        topic_name = topic["display_name"].lower()
-        # Count how many BERTopic keywords match this OpenAlex topic
-        matching_keywords = sum(1 for kw in bertopic_keywords if kw in topic_name)
+    for i, topic in enumerate(openalex_topics):
+        best_idx = int(np.argmax(sim_matrix[i]))
+        best_sim = float(sim_matrix[i, best_idx])
+        best_bertopic_id = bertopic_ids[best_idx]
 
-        # Estimate our count from matching BERTopic topics
-        our_count = 0
-        for tid, words in topic_result.topics.items():
-            for word in words:
-                if word.lower() in topic_name:
-                    our_count += topic_counts.get(tid, 0)
-                    break
-
+        our_count = topic_counts.get(best_bertopic_id, 0) if best_sim >= similarity_threshold else 0
         global_count = topic.get("works_count", 1)
         ratio = our_count / max(global_count, 1)
 
-        our_coverage.append({
+        entry = {
             "topic_name": topic["display_name"],
             "our_count": our_count,
             "global_count": global_count,
             "ratio": round(ratio, 4),
-            "matching_keywords": matching_keywords,
-        })
+            "best_match_similarity": round(best_sim, 4),
+            "best_match_topic": " ".join(topic_result.topics.get(best_bertopic_id, [])[:5]),
+        }
+        our_coverage.append(entry)
 
-        if ratio < threshold:
+        if best_sim < similarity_threshold:
             missing_topics.append({
                 "topic_name": topic["display_name"],
-                "our_count": our_count,
+                "our_count": 0,
                 "global_count": global_count,
-                "ratio": round(ratio, 4),
+                "ratio": 0.0,
+                "best_match_similarity": round(best_sim, 4),
             })
 
-    # Sort by ratio ascending (most missing first)
-    missing_topics.sort(key=lambda x: x["ratio"])
-    our_coverage.sort(key=lambda x: x["ratio"])
+    missing_topics.sort(key=lambda x: -x.get("best_match_similarity", 0))
+    our_coverage.sort(key=lambda x: x["best_match_similarity"])
 
-    logger.info("Coverage computed: %d missing topics (threshold < %.2f)",
-                len(missing_topics), threshold)
+    logger.info("Embedding coverage: %d/%d OpenAlex topics are missing (threshold=%.2f)",
+                len(missing_topics), len(openalex_topics), similarity_threshold)
     return our_coverage, missing_topics
 
 
 async def run_openalex(
     topic_result: TopicResult,
     output_dir: str = "./data/gap_analysis/openalex",
+    embedding_api_base: str | None = None,
+    embedding_model: str | None = None,
 ) -> OpenAlexResult:
-    """Run OpenAlex comparison: fetch topics → compute coverage → save."""
-    # Fetch OpenAlex topics
+    """Run OpenAlex comparison: fetch topics → embedding coverage → save."""
     global_topics = await fetch_openalex_topics()
 
-    # Compute coverage
-    our_coverage, missing_topics = compute_coverage(global_topics, topic_result)
+    our_coverage, missing_topics = await compute_coverage_embedding(
+        global_topics,
+        topic_result,
+        embedding_api_base=embedding_api_base,
+        embedding_model=embedding_model,
+    )
 
-    # Save artifacts
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
