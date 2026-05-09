@@ -155,8 +155,24 @@ def extract_core_terms(topic_name: str) -> list[str]:
     Input: "962_boxes_pallet_superboxes_trios"
     Output: ["boxes", "pallet", "superboxes", "trios"]
 
-    Fully deterministic - no LLM.
+    Fully deterministic - no LLM. Filters out English stop words
+    that BERTopic sometimes includes in labels (e.g., "the_and").
     """
+    # English stop words that add no semantic value to evidence search
+    STOP_WORDS = frozenset({
+        "the", "and", "for", "with", "of", "in", "on", "to", "a", "an",
+        "is", "it", "this", "that", "are", "was", "were", "be", "been",
+        "have", "has", "had", "from", "or", "but", "not", "no", "nor",
+        "do", "does", "did", "will", "would", "shall", "should", "may",
+        "might", "can", "could", "its", "they", "them", "their", "we",
+        "our", "you", "your", "he", "she", "his", "her", "who", "what",
+        "which", "where", "when", "how", "all", "each", "every", "both",
+        "few", "many", "much", "some", "such", "only", "own", "same",
+        "so", "than", "too", "very", "just", "also", "into", "over",
+        "after", "before", "between", "under", "about", "against",
+        "during", "among", "while", "being", "having", "doing",
+    })
+
     # Remove numeric prefix
     parts = topic_name.split("_", 1)
     if len(parts) > 1 and parts[0].isdigit():
@@ -168,8 +184,9 @@ def extract_core_terms(topic_name: str) -> list[str]:
     terms = []
     for term in core.split("_"):
         term_lower = term.lower().strip()
-        # Filter out noise
+        # Filter out noise and stop words
         if (len(term_lower) >= 3 and
+            term_lower not in STOP_WORDS and
             not term_lower.isdigit() and
             not term_lower.startswith("0x") and
             not term_lower.startswith("00")):

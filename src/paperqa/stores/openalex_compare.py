@@ -160,14 +160,27 @@ async def compute_coverage_embedding(
     async def embed_batch(texts: list[str]) -> np.ndarray:
         async with httpx.AsyncClient(timeout=120.0) as client:
             all_vecs = []
-            batch_size = 64
+            batch_size = 16
             for i in range(0, len(texts), batch_size):
                 batch = texts[i : i + batch_size]
-                resp = await client.post(
-                    f"{api_base}/embeddings",
-                    json={"input": batch, "model": model},
-                )
-                resp.raise_for_status()
+                retries = 3
+                for attempt in range(retries):
+                    try:
+                        resp = await client.post(
+                            f"{api_base}/embeddings",
+                            json={"input": batch, "model": model},
+                        )
+                        resp.raise_for_status()
+                        break
+                    except httpx.HTTPStatusError as e:
+                        if attempt == retries - 1:
+                            raise
+                        wait = 2 ** attempt
+                        logger.warning(
+                            "Embedding batch failed (attempt %d/%d), retrying in %ds: %s",
+                            attempt + 1, retries, wait, e.response.text[:100],
+                        )
+                        await asyncio.sleep(wait)
                 data = resp.json()["data"]
                 vecs = [item["embedding"] for item in sorted(data, key=lambda x: x["index"])]
                 all_vecs.extend(vecs)

@@ -123,7 +123,7 @@ async def generate_enriched_report(
     output_dir: str = "./data/gap_analysis",
     tantivy_index_dir: str = "./paper-qa/data/tantivy_index",
     max_gaps: int = 30,
-    min_domain_relevance: float = 0.3,
+    min_domain_relevance: float = 0.65,
     progress_callback: ProgressCallback = None,
     run_id: str = "",
 ) -> EnrichedReport:
