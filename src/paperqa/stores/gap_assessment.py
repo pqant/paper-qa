@@ -255,7 +255,26 @@ async def _call_llm(
         api_key=api_key,
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
-        max_tokens=max_tokens,
+        max_tokens=4000,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "assessment",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "paper_worthy": {"type": "string", "enum": ["worthy", "not_worthy", "insufficient_evidence"]},
+                        "confidence": {"type": "number"},
+                        "recommended_paper_type": {"type": ["string", "null"]},
+                        "reasoning": {"type": "string"},
+                        "concerns": {"type": "array", "items": {"type": "string"}},
+                        "suggested_focus": {"type": ["string", "null"]},
+                    },
+                    "required": ["paper_worthy", "confidence", "reasoning", "concerns"],
+                },
+                "strict": True,
+            },
+        },
     )
 
     msg = response["choices"][0]["message"]
