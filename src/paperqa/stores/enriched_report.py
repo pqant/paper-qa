@@ -1001,6 +1001,7 @@ async def _enrich_candidates(
                     "reasoning": assessment.reasoning,
                     "concerns": assessment.concerns,
                     "suggested_focus": assessment.suggested_focus,
+                    "gap_explanation": assessment.gap_explanation,
                     "evidence_verified": assessment.evidence_verified,
                     "verification_notes": assessment.verification_notes,
                 }

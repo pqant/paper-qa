@@ -39,6 +39,9 @@ class PaperWorthinessAssessment:
     # Suggested focus for the paper
     suggested_focus: str | None = None
 
+    # Gap explanation — what's actually missing in the literature
+    gap_explanation: str | None = None
+
     # Verification status
     evidence_verified: bool = False
     verification_notes: str | None = None
@@ -101,6 +104,7 @@ async def assess_gap_worthiness(
             reasoning=assessment_data.get("reasoning", ""),
             concerns=assessment_data.get("concerns", []),
             suggested_focus=assessment_data.get("suggested_focus"),
+            gap_explanation=assessment_data.get("gap_explanation"),
         )
 
         # Verify assessment against evidence (passes gap for domain check)
@@ -224,7 +228,8 @@ Return ONLY a valid JSON object, no preamble, no explanation, no markdown:
     "recommended_paper_type": "survey" or "algorithm" or "application" or "theory" or null,
     "reasoning": "Step 1: Is this about {get_domain_name()}? Step 2: Which rubric tier? Step 3: Cite chunks [1],[2].",
     "concerns": ["Wrong domain? Too few papers? Stale? Too broad? Already solved?"],
-    "suggested_focus": "If worthy: exact title/angle. Be specific."
+    "suggested_focus": "If worthy: exact title/angle. Be specific.",
+    "gap_explanation": "Literatürde tam olarak NE eksik? Hangi spesifik problem çözülmüş değil? 2-3 cümlede açıkla."
 }}
 """
     return prompt
@@ -356,8 +361,9 @@ async def _call_llm(
                         "reasoning": {"type": "string"},
                         "concerns": {"type": "array", "items": {"type": "string"}},
                         "suggested_focus": {"type": ["string", "null"]},
+                        "gap_explanation": {"type": ["string", "null"]},
                     },
-                    "required": ["paper_worthy", "confidence", "reasoning", "concerns"],
+                    "required": ["paper_worthy", "confidence", "reasoning", "concerns", "gap_explanation"],
                 },
                 "strict": True,
             },
