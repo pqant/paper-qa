@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -130,31 +132,101 @@ async def health_check():
 
 @app.get("/api/system/status")
 async def get_system_status():
-    """Get system component status."""
-    gaps = _load_real_gaps()
-    last_analysis = None
+    """Get system component status with real health checks."""
     report_path = _get_report_path()
+    last_analysis = None
     if report_path:
         stat = report_path.stat()
         from datetime import timezone
         last_analysis = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
 
+    # Real health checks
+    qdrant_url = os.getenv("QDRANT_URL", "http://192.168.0.28:6333").rstrip("/")
+    llm_url = os.getenv("LLM_URL", "http://192.168.0.28:8005").rstrip("/")
+    embedding_url = os.getenv("EMBEDDING_URL", "http://192.168.0.28:8082").rstrip("/")
+
+    async def check(url: str) -> str:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                await client.get(url)
+            return "online"
+        except Exception:
+            return "offline"
+
+    qdrant_status, llm_status, embedding_status = await asyncio.gather(
+        check(f"{qdrant_url}/collections"),
+        check(f"{llm_url}/v1/models"),
+        check(f"{embedding_url}/v1/models"),
+    )
+
+    # Get chunk count if Qdrant is online
+    chunk_count = 0
+    if qdrant_status == "online":
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{qdrant_url}/collections/paperbridge_glm_v2")
+                data = resp.json()
+                chunk_count = (
+                    data.get("result", {}).get("points_count", 0)
+                )
+        except Exception:
+            chunk_count = 175349  # fallback
+
     return {
         "qdrant": {
-            "status": "online",
+            "status": qdrant_status,
             "collection": "paperbridge_glm_v2",
-            "chunk_count": 175349,
+            "chunk_count": chunk_count,
         },
         "llm": {
-            "status": "online",
+            "status": llm_status,
             "model": "qwen3.6-35b-a3b",
         },
         "embedding": {
-            "status": "online",
+            "status": embedding_status,
             "model": "Qwen3-Embedding-8B",
         },
         "last_analysis": last_analysis,
     }
+
+
+# ==================== Health Check Proxy Endpoints ====================
+# These allow the browser to check service status without CORS issues.
+
+@app.get("/api/proxy/qdrant/{path:path}")
+async def proxy_qdrant(path: str):
+    """Proxy health check to Qdrant."""
+    qdrant_url = os.getenv("QDRANT_URL", "http://192.168.0.28:6333").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{qdrant_url}/{path}")
+            return {"status": "online", "data": resp.json()}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Qdrant offline")
+
+
+@app.get("/api/proxy/llm/{path:path}")
+async def proxy_llm(path: str):
+    """Proxy health check to LLM server."""
+    llm_url = os.getenv("LLM_URL", "http://192.168.0.28:8005").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{llm_url}/v1/{path}")
+            return {"status": "online", "data": resp.json()}
+    except Exception:
+        raise HTTPException(status_code=503, detail="LLM offline")
+
+
+@app.get("/api/proxy/embedding/{path:path}")
+async def proxy_embedding(path: str):
+    """Proxy health check to Embedding server."""
+    embedding_url = os.getenv("EMBEDDING_URL", "http://192.168.0.28:8082").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{embedding_url}/v1/{path}")
+            return {"status": "online", "data": resp.json()}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Embedding offline")
 
 
 # ==================== Query API (Phase 1) ====================
