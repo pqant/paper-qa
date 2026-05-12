@@ -48,8 +48,12 @@ _real_gaps_loaded = False
 
 
 def _get_report_path() -> Path:
-    """Find the latest report.json."""
-    paperqa = Path(__file__).resolve().parent.parent.parent.parent
+    """Find the latest report.json.
+
+    Path: web_api.py → paperqa → src → paper-qa (3 parents up)
+    Report lives at paper-qa/data/gap_analysis_integration_run/report/report.json
+    """
+    paperqa = Path(__file__).resolve().parent.parent.parent
     report_dir = paperqa / "data" / "gap_analysis_integration_run" / "report"
     if (report_dir / "report.json").exists():
         return report_dir / "report.json"
@@ -333,11 +337,7 @@ async def _run_gap_analysis_task(run_id: str):
     try:
         from paperqa.stores.enriched_report import generate_enriched_report
 
-        output_dir = str(
-            Path(__file__).resolve().parent.parent.parent.parent
-            / "data"
-            / "gap_analysis_integration_run"
-        )
+        paperqa_root = Path(__file__).resolve().parent.parent.parent
 
         await generate_enriched_report(
             qdrant_url="http://192.168.0.28:6333",
@@ -345,12 +345,8 @@ async def _run_gap_analysis_task(run_id: str):
             embedding_url="http://192.168.0.28:8082",
             llm_api_base="http://192.168.0.28:8005/v1",
             llm_model="qwen3.6-35b-a3b",
-            output_dir=output_dir,
-            tantivy_index_dir=str(
-                Path(__file__).resolve().parent.parent.parent.parent
-                / "data"
-                / "tantivy_index"
-            ),
+            output_dir=str(paperqa_root / "data" / "gap_analysis_integration_run"),
+            tantivy_index_dir=str(paperqa_root / "data" / "tantivy_index"),
             max_gaps=150,
             min_domain_relevance=0.50,
             run_id=f"api-{int(datetime.now().timestamp())}",
